@@ -153,7 +153,12 @@ void handle_SC_Add() {
 
     return move_program_counter();
 }
-
+void handle_SC_Abs() {
+    int val = (int)kernel->machine->ReadRegister(4);
+    int result = SysAbs(val);
+    kernel->machine->WriteRegister(2, result);
+    return move_program_counter();
+}
 void handle_SC_ReadNum() {
     int result = SysReadNum();
     kernel->machine->WriteRegister(2, result);
@@ -421,6 +426,8 @@ void ExceptionHandler(ExceptionType which) {
                     return handle_SC_Halt();
                 case SC_Add:
                     return handle_SC_Add();
+		case SC_Abs:
+    		    return handle_SC_Abs();
                 case SC_ReadNum:
                     return handle_SC_ReadNum();
                 case SC_PrintNum:
