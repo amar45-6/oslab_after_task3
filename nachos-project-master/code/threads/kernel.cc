@@ -144,7 +144,9 @@ Kernel::~Kernel() {
 // Kernel::ThreadSelfTest
 //      Test threads, semaphores, synchlists
 //----------------------------------------------------------------------
-
+static void PriorityTestThread(int which) {
+    printf("*** thread priority %d running\n", which);
+}
 void Kernel::ThreadSelfTest() {
     Semaphore *semaphore;
     SynchList<int> *synchList;
@@ -163,6 +165,27 @@ void Kernel::ThreadSelfTest() {
     synchList = new SynchList<int>;
     synchList->SelfTest(9);
     delete synchList;
+    // test priority scheduler
+    printf("\n--- Priority Scheduler Test ---\n");
+
+    IntStatus oldLevel = kernel->interrupt->SetLevel(IntOff);  // disable interrupts
+
+    Thread* t1 = new Thread("low-priority");
+    t1->setPriority(1);
+    t1->Fork((VoidFunctionPtr)PriorityTestThread, (void*)1);
+
+    Thread* t2 = new Thread("medium-priority");
+    t2->setPriority(5);
+    t2->Fork((VoidFunctionPtr)PriorityTestThread, (void*)5);
+
+    Thread* t3 = new Thread("high-priority");
+    t3->setPriority(10);
+    t3->Fork((VoidFunctionPtr)PriorityTestThread, (void*)10);
+
+    kernel->interrupt->SetLevel(oldLevel);  // re-enable, now scheduler picks highest
+
+    currentThread->Yield();
+    printf("--- Priority Scheduler Test Done ---\n");
 }
 
 //----------------------------------------------------------------------

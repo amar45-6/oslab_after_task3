@@ -138,6 +138,14 @@ abs.o: abs.c
 abs: abs.o start.o
 	$(LD) $(LDFLAGS) start.o abs.o -o abs.coff
 	$(COFF2NOFF) abs.coff abs
+
+priority_test.o: priority_test.c
+	$(CC) $(CFLAGS) -c priority_test.c
+
+priority_test: priority_test.o start.o
+	$(LD) $(LDFLAGS) start.o priority_test.o -o priority_test.coff
+	$(COFF2NOFF) priority_test.coff priority_test
+
 shell.o: shell.c
 	$(CC) $(CFLAGS) -c shell.c
 shell: shell.o start.o

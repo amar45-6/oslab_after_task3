@@ -208,6 +208,13 @@ int SysJoin(int id) { return kernel->pTab->JoinUpdate(id); }
 
 int SysExit(int id) { return kernel->pTab->ExitUpdate(id); }
 
+int SysThreadFork(void (*func)(), int priority) {
+    Thread* t = new Thread("forked", true);
+    t->setPriority(priority);
+    t->Fork((VoidFunctionPtr)func, (void*)0);
+    return 0;
+}
+
 int SysCreateSemaphore(char* name, int initialValue) {
     int res = kernel->semTab->Create(name, initialValue);
 

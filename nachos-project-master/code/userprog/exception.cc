@@ -398,6 +398,17 @@ void handle_SC_GetPid() {
     kernel->machine->WriteRegister(2, SysGetPid());
     return move_program_counter();
 }
+void handle_SC_ThreadFork() {
+    int funcAddr = (int)kernel->machine->ReadRegister(4);
+    int priority  = (int)kernel->machine->ReadRegister(5);
+
+    Thread* t = new Thread("forked", true);
+    t->setPriority(priority);
+    t->Fork((VoidFunctionPtr)funcAddr, (void*)0);
+
+    kernel->machine->WriteRegister(2, 0);
+    return move_program_counter();
+}
 
 void ExceptionHandler(ExceptionType which) {
     int type = kernel->machine->ReadRegister(2);
@@ -468,6 +479,8 @@ void ExceptionHandler(ExceptionType which) {
                     return handle_SC_Signal();
                 case SC_GetPid:
                     return handle_SC_GetPid();
+		case SC_ThreadFork:
+    		    return handle_SC_ThreadFork();
                 /**
                  * Handle all not implemented syscalls
                  * If you want to write a new handler for syscall:
@@ -477,7 +490,6 @@ void ExceptionHandler(ExceptionType which) {
                  */
                 case SC_Create:
                 case SC_Remove:
-                case SC_ThreadFork:
                 case SC_ThreadYield:
                 case SC_ExecV:
                 case SC_ThreadExit:

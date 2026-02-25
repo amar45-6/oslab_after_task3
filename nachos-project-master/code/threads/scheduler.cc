@@ -28,9 +28,13 @@
 // 	Initialize the list of ready but not running threads.
 //	Initially, no ready threads.
 //----------------------------------------------------------------------
-
+static int PriorityCompare(Thread* a, Thread* b) {
+    if (a->getPriority() > b->getPriority()) return -1;  // a goes first
+    if (a->getPriority() < b->getPriority()) return 1;   // b goes first
+    return 0;
+}
 Scheduler::Scheduler() {
-    readyList = new List<Thread *>;
+    readyList = new SortedList<Thread*>(PriorityCompare);
     toBeDestroyed = NULL;
 }
 
@@ -49,14 +53,12 @@ Scheduler::~Scheduler() { delete readyList; }
 //	"thread" is the thread to be put on the ready list.
 //----------------------------------------------------------------------
 
-void Scheduler::ReadyToRun(Thread *thread) {
+void Scheduler::ReadyToRun(Thread* thread) {
     ASSERT(kernel->interrupt->getLevel() == IntOff);
     DEBUG(dbgThread, "Putting thread on ready list: " << thread->getName());
-
     thread->setStatus(READY);
-    readyList->Append(thread);
+    readyList->Insert(thread);  // was: readyList->Append(thread)
 }
-
 //----------------------------------------------------------------------
 // Scheduler::FindNextToRun
 // 	Return the next thread to be scheduled onto the CPU.

@@ -36,6 +36,7 @@ const int STACK_FENCEPOST = 0xdedbeef;
 Thread::Thread(char *threadName, bool _has_dynamic_name /*=false*/) {
     has_dynamic_name = _has_dynamic_name;
     name = threadName;
+    priority = 0;  // default priority
     stackTop = NULL;
     stack = NULL;
     status = JUST_CREATED;
