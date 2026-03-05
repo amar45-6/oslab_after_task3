@@ -398,6 +398,17 @@ void handle_SC_GetPid() {
     kernel->machine->WriteRegister(2, SysGetPid());
     return move_program_counter();
 }
+void handle_SC_Sleep() {
+    int ticks = (int)kernel->machine->ReadRegister(4);
+    DEBUG(dbgSys, "Sleep called with ticks=" << ticks << "\n");
+    SysSleep(ticks);
+    kernel->machine->WriteRegister(2, 0);
+    return move_program_counter();
+}
+void handle_SC_GetTicks() {
+    kernel->machine->WriteRegister(2, SysGetTicks());
+    return move_program_counter();
+}
 void handle_SC_ThreadFork() {
     int funcAddr = (int)kernel->machine->ReadRegister(4);
     int priority  = (int)kernel->machine->ReadRegister(5);
@@ -479,6 +490,10 @@ void ExceptionHandler(ExceptionType which) {
                     return handle_SC_Signal();
                 case SC_GetPid:
                     return handle_SC_GetPid();
+		case SC_Sleep:             
+                    return handle_SC_Sleep();
+		case SC_GetTicks:
+                    return handle_SC_GetTicks();
 		case SC_ThreadFork:
     		    return handle_SC_ThreadFork();
                 /**

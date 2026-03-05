@@ -253,4 +253,12 @@ int SysSignal(char* name) {
 
 int SysGetPid() { return kernel->currentThread->processID; }
 
+void SysSleep(int ticks) {
+    if (ticks <= 0) {
+        kernel->currentThread->Yield();
+        return;
+    }
+    kernel->alarm->WaitUntil(ticks);
+}
+int SysGetTicks() { return kernel->stats->totalTicks; }
 #endif /* ! __USERPROG_KSYSCALL_H__ */

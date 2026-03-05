@@ -49,6 +49,8 @@
 #define SC_Signal 53
 #define SC_GetPid 54
 #define SC_Abs 55
+#define SC_Sleep 56
+#define SC_GetTicks 57
 #ifndef IN_ASM
 
 /* The system call interface.  These are the operations the Nachos
@@ -210,7 +212,11 @@ int ThreadJoin(ThreadId id);
  * Deletes current thread and returns ExitCode to every waiting lokal thread.
  */
 void ThreadExit(int ExitCode);
-
+/*
+ * Suspend the calling thread for "when" timer ticks.
+ */
+void Sleep(int when);
+int GetTicks();
 #endif /* IN_ASM */
 
 #endif /* SYSCALL_H */

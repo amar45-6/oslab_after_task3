@@ -20,7 +20,10 @@
 //		occur at random, instead of fixed, intervals.
 //----------------------------------------------------------------------
 
-Alarm::Alarm(bool doRandom) { timer = new Timer(doRandom, this); }
+Alarm::Alarm(bool doRandom) {
+    timer = new Timer(doRandom, this);
+    sleepList = new List<SleepEntry *>();
+}
 
 //----------------------------------------------------------------------
 // Alarm::CallBack
@@ -40,9 +43,38 @@ Alarm::Alarm(bool doRandom) { timer = new Timer(doRandom, this); }
 //      if we're currently running something (in other words, not idle).
 //----------------------------------------------------------------------
 
+void Alarm::WaitUntil(int x) {
+    IntStatus oldLevel = kernel->interrupt->SetLevel(IntOff);
+
+    SleepEntry *entry = new SleepEntry();
+    entry->thread   = kernel->currentThread;
+    entry->wakeTime = kernel->stats->totalTicks + x;
+    sleepList->Append(entry);
+
+    kernel->currentThread->Sleep(false);  // block the thread
+
+    kernel->interrupt->SetLevel(oldLevel);
+}
+
 void Alarm::CallBack() {
     Interrupt *interrupt = kernel->interrupt;
     MachineStatus status = interrupt->getStatus();
+    int now = kernel->stats->totalTicks;
+
+    List<SleepEntry *> *remaining = new List<SleepEntry *>();
+    while (!sleepList->IsEmpty()) {
+        SleepEntry *entry = sleepList->RemoveFront();
+        if (entry->wakeTime <= now) {
+            kernel->scheduler->ReadyToRun(entry->thread);
+            delete entry;
+        } else {
+            remaining->Append(entry);
+        }
+    }
+    while (!remaining->IsEmpty()) {
+        sleepList->Append(remaining->RemoveFront());
+    }
+    delete remaining;
 
     if (status != IdleMode) {
         interrupt->YieldOnReturn();
