@@ -249,3 +249,308 @@ make
 --- Priority Scheduler Test Done ---
 ```
 <img width="878" height="545" alt="image" src="https://github.com/user-attachments/assets/d5c50227-bd2c-45bf-9dcf-1b5d713e6650" />
+
+# Task 3: Sleep System Call Implementation in NachOS
+
+## Overview
+Implemented a `Sleep(int ticks)` system call that suspends the calling thread for a specified number of timer ticks. The thread truly blocks (releases the CPU) and is woken up by the timer interrupt handler once the requested time has elapsed.
+
+---
+
+## Files Modified
+
+| File | Change |
+|------|--------|
+| `code/userprog/syscall.h` | Added `SC_Sleep 56`, `SC_GetTicks 57`, declarations `void Sleep(int)`, `int GetTicks()` |
+| `code/threads/alarm.h` | Added `SleepEntry` struct and `List<SleepEntry*>* sleepList` member |
+| `code/threads/alarm.cc` | Implemented `WaitUntil()` and updated `CallBack()` to wake sleeping threads |
+| `code/userprog/ksyscall.h` | Added `SysSleep()` and `SysGetTicks()` kernel functions |
+| `code/userprog/exception.cc` | Added `handle_SC_Sleep()`, `handle_SC_GetTicks()`, and cases in the switch |
+| `code/test/start.S` | Added MIPS assembly stubs for `Sleep` and `GetTicks` |
+| `code/test/Makefile` | Added build rules for `sleep_test` |
+| `code/test/sleep_test.c` | New test program (created) |
+
+---
+
+## Implementation
+
+### 1. `code/userprog/syscall.h`
+
+Assign syscall numbers and declare user-facing functions:
+
+```c
+#define SC_Sleep    56
+#define SC_GetTicks 57
+
+void Sleep(int when);  // suspend for 'when' ticks
+int  GetTicks();       // return current tick count
+```
+
+---
+
+### 2. `code/threads/alarm.h`
+
+Add a struct to track each sleeping thread and a list to hold them:
+
+```cpp
+struct SleepEntry {
+    Thread *thread;  // thread to wake up
+    int wakeTime;    // absolute tick when it should wake
+};
+
+class Alarm : public CallBackObj {
+    ...
+private:
+    Timer *timer;
+    List<SleepEntry *> *sleepList;  // ADD THIS
+    void CallBack();
+};
+```
+
+---
+
+### 3. `code/threads/alarm.cc`
+
+**Constructor** — initialise the sleep list:
+
+```cpp
+Alarm::Alarm(bool doRandom) {
+    timer = new Timer(doRandom, this);
+    sleepList = new List<SleepEntry *>();  // ADD THIS LINE
+}
+```
+
+**WaitUntil()** — block the current thread for `x` ticks:
+
+```cpp
+void Alarm::WaitUntil(int x) {
+    IntStatus oldLevel = kernel->interrupt->SetLevel(IntOff);
+
+    SleepEntry *entry = new SleepEntry();
+    entry->thread   = kernel->currentThread;
+    entry->wakeTime = kernel->stats->totalTicks + x;
+    sleepList->Append(entry);
+
+    kernel->currentThread->Sleep(false);  // block the thread
+
+    kernel->interrupt->SetLevel(oldLevel);
+}
+```
+
+**CallBack()** — on every timer interrupt, wake threads whose time has come:
+
+```cpp
+void Alarm::CallBack() {
+    Interrupt *interrupt = kernel->interrupt;
+    MachineStatus status = interrupt->getStatus();
+    int now = kernel->stats->totalTicks;
+
+    List<SleepEntry *> *remaining = new List<SleepEntry *>();
+    while (!sleepList->IsEmpty()) {
+        SleepEntry *entry = sleepList->RemoveFront();
+        if (entry->wakeTime <= now) {
+            kernel->scheduler->ReadyToRun(entry->thread);  // wake it
+            delete entry;
+        } else {
+            remaining->Append(entry);
+        }
+    }
+    while (!remaining->IsEmpty())
+        sleepList->Append(remaining->RemoveFront());
+    delete remaining;
+
+    if (status != IdleMode)
+        interrupt->YieldOnReturn();
+}
+```
+
+---
+
+### 4. `code/userprog/ksyscall.h`
+
+Add kernel-side implementations:
+
+```cpp
+void SysSleep(int ticks) {
+    if (ticks <= 0) {
+        kernel->currentThread->Yield();
+        return;
+    }
+    kernel->alarm->WaitUntil(ticks);
+}
+
+int SysGetTicks() {
+    return kernel->stats->totalTicks;
+}
+```
+
+---
+
+### 5. `code/userprog/exception.cc`
+
+Add handler functions before `ExceptionHandler`:
+
+```cpp
+void handle_SC_Sleep() {
+    int ticks = (int)kernel->machine->ReadRegister(4);
+    DEBUG(dbgSys, "Sleep called with ticks=" << ticks << "\n");
+    SysSleep(ticks);
+    kernel->machine->WriteRegister(2, 0);
+    return move_program_counter();
+}
+
+void handle_SC_GetTicks() {
+    kernel->machine->WriteRegister(2, SysGetTicks());
+    return move_program_counter();
+}
+```
+
+Add cases inside the switch in `ExceptionHandler`:
+
+```cpp
+case SC_Sleep:
+    return handle_SC_Sleep();
+case SC_GetTicks:
+    return handle_SC_GetTicks();
+```
+
+---
+
+### 6. `code/test/start.S`
+
+Add MIPS assembly stubs **before the `__main` block**:
+
+```asm
+    .globl Sleep
+    .ent   Sleep
+Sleep:
+    addiu $2,$0,SC_Sleep
+    syscall
+    j     $31
+    .end  Sleep
+
+    .globl GetTicks
+    .ent   GetTicks
+GetTicks:
+    addiu $2,$0,SC_GetTicks
+    syscall
+    j     $31
+    .end  GetTicks
+```
+
+
+
+---
+
+### 7. `code/test/Makefile`
+
+Add `sleep_test` to the PROGRAMS list:
+
+```makefile
+PROGRAMS = ... main sleep_test
+```
+
+Add build rules:
+
+```makefile
+sleep_test.o: sleep_test.c
+	$(CC) $(CFLAGS) -c sleep_test.c
+sleep_test: sleep_test.o start.o
+	$(LD) $(LDFLAGS) start.o sleep_test.o -o sleep_test.coff
+	$(COFF2NOFF) sleep_test.coff sleep_test
+```
+
+---
+
+### 8. `code/test/sleep_test.c` (new file)
+
+```c
+#include "syscall.h"
+
+int main() {
+    int before, after, slept;
+
+    before = GetTicks();
+    Sleep(1000);
+    after = GetTicks();
+    slept = after - before;
+
+    PrintString("Requested ticks : 1000\n");
+    PrintString("Slept for ticks : ");
+    PrintNum(slept);
+    PrintString("\n");
+
+    Halt();
+}
+```
+
+---
+
+## How It Works
+
+```
+User: Sleep(1000)
+  → SC_Sleep trap (syscall number 56)
+  → handle_SC_Sleep() reads R4 = 1000
+  → SysSleep(1000)
+  → alarm->WaitUntil(1000)
+  → thread added to sleepList, Thread::Sleep(false) blocks it
+  → CPU runs other threads or goes idle
+  → timer fires every 100 ticks → Alarm::CallBack() runs
+  → totalTicks >= wakeTime → scheduler->ReadyToRun(thread)
+  → thread resumes, returns to user space
+```
+
+1. User calls `Sleep(1000)` — triggers syscall trap with `SC_Sleep = 56`
+2. `handle_SC_Sleep()` reads the tick count from register R4
+3. `SysSleep()` calls `alarm->WaitUntil(1000)`
+4. `WaitUntil()` disables interrupts, computes `wakeTime = now + 1000`, appends to `sleepList`, then calls `Thread::Sleep(false)` to block
+5. CPU is free — runs other threads or goes idle
+6. Timer fires every 100 ticks, triggering `Alarm::CallBack()`
+7. `CallBack()` scans `sleepList` — when `totalTicks >= wakeTime`, calls `scheduler->ReadyToRun(thread)`
+8. Thread resumes and returns to user space
+
+---
+
+## Build and Run
+
+**Build the kernel:**
+
+```bash
+cd nachos-project-master/code/build.linux
+make
+```
+
+**Build the test program:**
+
+```bash
+cd nachos-project-master/code/test
+make sleep_test
+```
+
+**Run:**
+
+```bash
+cd nachos-project-master/code/build.linux
+./nachos -x ../test/sleep_test
+```
+
+---
+
+## Output
+
+<img width="1011" height="660" alt="image" src="https://github.com/user-attachments/assets/9c1d3ed7-0e6b-4bc1-b78c-683924046066" />
+
+---
+
+## Verification
+
+| Metric | Value | Meaning |
+|--------|-------|---------|
+| Requested sleep | 1000 ticks | Argument passed to `Sleep()` |
+| Actual sleep | 1074 ticks | Woke at next timer interrupt after 1000 |
+| Overshoot | 74 ticks | Always < 100 (one timer interval) ✅ |
+| Idle ticks | 5641 / 7286 total | CPU was free while thread slept ✅ |
+
+The overshoot is always between **0 and 100 ticks** because NachOS timer interrupts fire every 100 ticks — the thread wakes at the first interrupt after the requested duration.
+
