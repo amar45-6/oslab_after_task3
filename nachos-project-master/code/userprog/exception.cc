@@ -409,6 +409,27 @@ void handle_SC_GetTicks() {
     kernel->machine->WriteRegister(2, SysGetTicks());
     return move_program_counter();
 }
+
+void handle_SC_Pipe() {
+    int virtAddr1 = kernel->machine->ReadRegister(4);
+    int virtAddr2 = kernel->machine->ReadRegister(5);
+
+    char* cmd1 = stringUser2System(virtAddr1);
+    char* cmd2 = stringUser2System(virtAddr2);
+
+    if (cmd1 == NULL || cmd2 == NULL) {
+        DEBUG(dbgSys, "\nPipe: Not enough memory in System");
+        kernel->machine->WriteRegister(2, -1);
+        if (cmd1) delete[] cmd1;
+        if (cmd2) delete[] cmd2;
+        return move_program_counter();
+    }
+
+    kernel->machine->WriteRegister(2, SysPipe(cmd1, cmd2));
+    // DO NOT DELETE cmd1/cmd2 here; ExecUpdate takes ownership
+    return move_program_counter();
+}
+
 void handle_SC_ThreadFork() {
     int funcAddr = (int)kernel->machine->ReadRegister(4);
     int priority  = (int)kernel->machine->ReadRegister(5);
@@ -494,6 +515,8 @@ void ExceptionHandler(ExceptionType which) {
                     return handle_SC_Sleep();
 		case SC_GetTicks:
                     return handle_SC_GetTicks();
+		case SC_Pipe:
+                    return handle_SC_Pipe();
 		case SC_ThreadFork:
     		    return handle_SC_ThreadFork();
                 /**

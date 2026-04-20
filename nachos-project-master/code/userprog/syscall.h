@@ -51,6 +51,7 @@
 #define SC_Abs 55
 #define SC_Sleep 56
 #define SC_GetTicks 57
+#define SC_Pipe 58
 #ifndef IN_ASM
 
 /* The system call interface.  These are the operations the Nachos
@@ -217,6 +218,8 @@ void ThreadExit(int ExitCode);
  */
 void Sleep(int when);
 int GetTicks();
+
+int Pipe(char *cmd1, char *cmd2);
 #endif /* IN_ASM */
 
 #endif /* SYSCALL_H */

@@ -206,6 +206,58 @@ int SysExec(char* name) {
 
 int SysJoin(int id) { return kernel->pTab->JoinUpdate(id); }
 
+int SysPipe(char* cmd1, char* cmd2) {
+    // Step 1: Create the pipe buffer file
+    if (!kernel->fileSystem->Create("__pipe_buf__")) {
+        DEBUG(dbgSys, "\nPipe: Cannot create pipe buffer file.");
+        return -1;
+    }
+
+    // Step 2: Exec cmd1 (producer)
+    OpenFile* f1 = kernel->fileSystem->Open(cmd1);
+    if (f1 == NULL) {
+        DEBUG(dbgSys, "\nPipe: Cannot open cmd1 executable.");
+        kernel->fileSystem->Remove("__pipe_buf__");
+        return -1;
+    }
+    delete f1;
+
+    int pid1 = kernel->pTab->ExecUpdate(cmd1);
+    if (pid1 < 0) {
+        DEBUG(dbgSys, "\nPipe: Cannot exec cmd1.");
+        kernel->fileSystem->Remove("__pipe_buf__");
+        return -1;
+    }
+
+    // Step 3: Wait for producer to finish
+    kernel->pTab->JoinUpdate(pid1);
+
+    // Step 4: Exec cmd2 (consumer)
+    OpenFile* f2 = kernel->fileSystem->Open(cmd2);
+    if (f2 == NULL) {
+        DEBUG(dbgSys, "\nPipe: Cannot open cmd2 executable.");
+        kernel->fileSystem->Remove("__pipe_buf__");
+        return -1;
+    }
+    delete f2;
+
+    int pid2 = kernel->pTab->ExecUpdate(cmd2);
+    if (pid2 < 0) {
+        DEBUG(dbgSys, "\nPipe: Cannot exec cmd2.");
+        kernel->fileSystem->Remove("__pipe_buf__");
+        return -1;
+    }
+
+    // Step 5: Wait for consumer to finish
+    int result = kernel->pTab->JoinUpdate(pid2);
+
+    // Step 6: Clean up pipe buffer
+    kernel->fileSystem->Remove("__pipe_buf__");
+
+    return result;
+}
+
+
 int SysExit(int id) { return kernel->pTab->ExitUpdate(id); }
 
 int SysThreadFork(void (*func)(), int priority) {
