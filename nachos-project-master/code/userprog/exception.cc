@@ -63,25 +63,28 @@ char* stringUser2System(int addr, int convert_length = -1) {
     char* str;
 
     do {
-        int oneChar;
+        // Pre-fault the page BEFORE calling ReadMem
+        int vpn = (addr + length) / PageSize;
+        kernel->currentThread->space->LoadPage(vpn);
+
+        int oneChar = 0;
         kernel->machine->ReadMem(addr + length, 1, &oneChar);
         length++;
-        // if convert_length == -1, we use '\0' to terminate the process
-        // otherwise, we use convert_length to terminate the process
         stop = ((oneChar == '\0' && convert_length == -1) ||
                 length == convert_length);
     } while (!stop);
 
     str = new char[length];
     for (int i = 0; i < length; i++) {
-        int oneChar;
-        kernel->machine->ReadMem(addr + i, 1,
-                                 &oneChar);  // copy characters to kernel space
+        int vpn = (addr + i) / PageSize;
+        kernel->currentThread->space->LoadPage(vpn);
+
+        int oneChar = 0;
+        kernel->machine->ReadMem(addr + i, 1, &oneChar);
         str[i] = (unsigned char)oneChar;
     }
     return str;
 }
-
 /**
  * @brief Convert system string to user string
  *
@@ -91,12 +94,16 @@ char* stringUser2System(int addr, int convert_length = -1) {
  * blank to convert all characters of system string
  * @return void
  */
+// AFTER
 void StringSys2User(char* str, int addr, int convert_length = -1) {
     int length = (convert_length == -1 ? strlen(str) : convert_length);
     for (int i = 0; i < length; i++) {
-        kernel->machine->WriteMem(addr + i, 1,
-                                  str[i]);  // copy characters to user space
+        int vpn = (addr + i) / PageSize;
+        kernel->currentThread->space->LoadPage(vpn);
+        kernel->machine->WriteMem(addr + i, 1, str[i]);
     }
+    int vpn = (addr + length) / PageSize;
+    kernel->currentThread->space->LoadPage(vpn);
     kernel->machine->WriteMem(addr + length, 1, '\0');
 }
 
@@ -451,17 +458,27 @@ void ExceptionHandler(ExceptionType which) {
         case NoException:  // return control to kernel
             kernel->interrupt->setStatus(SystemMode);
             DEBUG(dbgSys, "Switch to system mode\n");
-            break;
-        case PageFaultException:
+            return;
+        case PageFaultException: {
+            int vaddr = kernel->machine->ReadRegister(BadVAddrReg);
+            int vpn   = vaddr / PageSize;
+	    kernel->stats->numPageFaults++;
+            DEBUG(dbgAddr, "Page fault at vaddr=" << vaddr << " vpn=" << vpn);
+            kernel->currentThread->space->LoadPage(vpn);
+            // DO NOT call move_program_counter() — CPU re-executes faulting instruction
+            return;
+        }
         case ReadOnlyException:
         case BusErrorException:
         case AddressErrorException:
         case OverflowException:
         case IllegalInstrException:
         case NumExceptionTypes:
-            cerr << "Error " << which << " occurs\n";
-            SysHalt();
-            ASSERTNOTREACHED();
+    		cerr << "Error " << which << " occurs in thread "
+         		<< kernel->currentThread->getName() << "\n";
+    		kernel->currentThread->Finish();   // ← kills only this process
+    		ASSERTNOTREACHED();				       
+            
 
         case SyscallException:
             switch (type) {

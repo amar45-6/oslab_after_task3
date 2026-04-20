@@ -19,7 +19,6 @@
 #include "main.h"
 #include "addrspace.h"
 #include "machine.h"
-#include "noff.h"
 #include "synch.h"
 
 //----------------------------------------------------------------------
@@ -85,12 +84,16 @@ AddrSpace::AddrSpace() {
 
 AddrSpace::~AddrSpace() {
     int i;
+    kernel->addrLock->P();          // ← ADD THIS
     for (i = 0; i < numPages; i++) {
-        kernel->gPhysPageBitMap->Clear(pageTable[i].physicalPage);
+        if (pageTable[i].valid) {
+            kernel->gPhysPageBitMap->Clear(pageTable[i].physicalPage);
+        }
     }
+    kernel->addrLock->V();          // ← ADD THIS
     delete[] pageTable;
+    if (executable) delete executable;
 }
-
 //----------------------------------------------------------------------
 // AddrSpace::Load
 // 	Load a user program into memory from a file.
@@ -102,86 +105,129 @@ AddrSpace::~AddrSpace() {
 //----------------------------------------------------------------------
 
 AddrSpace::AddrSpace(char *fileName) {
-    OpenFile *executable = kernel->fileSystem->Open(fileName);
-    NoffHeader noffH;
-    unsigned int i, size, j, offset;
-    unsigned int numCodePage,
-        numDataPage;  // số trang cho phần code và phần initData
-    int lastCodePageSize, lastDataPageSize, firstDataPageSize,
-        tempDataSize;  // kích thước ghi vào trang cuối Code, initData, và trang
-                       // đầu của initData
+    executable = kernel->fileSystem->Open(fileName);
+    unsigned int i, size;
 
     if (executable == NULL) {
         DEBUG(dbgFile, "\n Error opening file.");
         return;
     }
-    //đọc header của file
+
     executable->ReadAt((char *)&noffH, sizeof(noffH), 0);
     if ((noffH.noffMagic != NOFFMAGIC) &&
         (WordToHost(noffH.noffMagic) == NOFFMAGIC))
         SwapHeader(&noffH);
     ASSERT(noffH.noffMagic == NOFFMAGIC);
+
     kernel->addrLock->P();
-    // how big is address space?
+
     size = noffH.code.size + noffH.initData.size + noffH.uninitData.size +
-           UserStackSize;  // we need to increase the size
-                           // to leave room for the stack
+           UserStackSize;
     numPages = divRoundUp(size, PageSize);
     size = numPages * PageSize;
 
-    ASSERT(numPages <= NumPhysPages);  // check we're not trying
-                                       // to run anything too big --
-                                       // at least until we have
-                                       // virtual memory
+    ASSERT(numPages <= NumPhysPages);
 
-    // Check the available memory enough to load new process
-    // debug
-    if (numPages > kernel->gPhysPageBitMap->NumClear()) {
-        DEBUG(dbgAddr, "Not enough free space");
-        numPages = 0;
-        delete executable;
-        kernel->addrLock->V();
-        return;
-    }
-    DEBUG(dbgAddr, "Initializing address space: " << numPages << ", " << size);
-    // first, set up the translation
+    DEBUG(dbgAddr, "Demand paging: " << numPages << " virtual pages, not loaded yet.");
+
+    // Set up page table — all pages invalid, no physical frames yet
     pageTable = new TranslationEntry[numPages];
     for (i = 0; i < numPages; i++) {
-        pageTable[i].virtualPage = i;  // for now, virtual page # = phys page #
-        pageTable[i].physicalPage = kernel->gPhysPageBitMap->FindAndSet();
-        // cerr << pageTable[i].physicalPage << endl;
-        pageTable[i].valid = TRUE;
-        pageTable[i].use = FALSE;
-        pageTable[i].dirty = FALSE;
-        pageTable[i].readOnly = FALSE;  // if the code segment was entirely on
-        // a separate page, we could set its
-        // pages to be read-only
-        // xóa các trang này trên memory
-        bzero(&(kernel->machine
-                    ->mainMemory[pageTable[i].physicalPage * PageSize]),
-              PageSize);
-        DEBUG(dbgAddr, "phyPage " << pageTable[i].physicalPage);
-    }
-
-    if (noffH.code.size > 0) {
-        for (i = 0; i < numPages; i++)
-            executable->ReadAt(
-                &(kernel->machine->mainMemory[noffH.code.virtualAddr]) +
-                    (pageTable[i].physicalPage * PageSize),
-                PageSize, noffH.code.inFileAddr + (i * PageSize));
-    }
-
-    if (noffH.initData.size > 0) {
-        for (i = 0; i < numPages; i++)
-            executable->ReadAt(
-                &(kernel->machine->mainMemory[noffH.initData.virtualAddr]) +
-                    (pageTable[i].physicalPage * PageSize),
-                PageSize, noffH.initData.inFileAddr + (i * PageSize));
+        pageTable[i].virtualPage  = i;
+        pageTable[i].physicalPage = 0;    // dummy frame yet
+        pageTable[i].valid        = FALSE; // will fault on first access
+        pageTable[i].use          = FALSE;
+        pageTable[i].dirty        = FALSE;
+        pageTable[i].readOnly     = FALSE;
     }
 
     kernel->addrLock->V();
-    delete executable;
-    return;
+    // NOTE: do NOT delete executable — kept open for LoadPage()
+}
+
+void AddrSpace::LoadPage(int vpn) {
+    // bounds check
+    if (vpn < 0 || (unsigned int)vpn >= numPages) {
+        DEBUG(dbgAddr, "LoadPage: vpn=" << vpn << " out of range!");
+        return;
+    }
+
+    if (pageTable[vpn].valid) return;   // already loaded
+
+    // Allocate a physical frame under lock, but do NOT mark valid yet.
+    // valid must only be set TRUE after the frame is fully populated,
+    // otherwise a concurrent Translate() retry can read stale/zeroed data.
+    kernel->addrLock->P();
+    if (pageTable[vpn].valid) {          // double-check after acquiring lock
+        kernel->addrLock->V();
+        return;
+    }
+    int ppn = kernel->gPhysPageBitMap->FindAndSet();
+    ASSERT(ppn >= 0);
+    pageTable[vpn].physicalPage = ppn;
+    // Leave valid = FALSE until data is ready
+    kernel->addrLock->V();
+
+    // Zero out the physical page (we own ppn exclusively until valid is set)
+    bzero(&(kernel->machine->mainMemory[ppn * PageSize]), PageSize);
+
+    int pageStart = vpn * PageSize;
+    int pageEnd   = pageStart + PageSize;
+
+    bool loaded = false;
+
+    // Load from code segment if this page overlaps it
+    if (noffH.code.size > 0) {
+        int codeStart = noffH.code.virtualAddr;
+        int codeEnd   = codeStart + noffH.code.size;
+        if (pageStart < codeEnd && pageEnd > codeStart) {
+            // Calculate overlap region
+            int overlapStart = (pageStart > codeStart) ? pageStart : codeStart;
+            int overlapEnd   = (pageEnd < codeEnd)     ? pageEnd   : codeEnd;
+            int overlapSize  = overlapEnd - overlapStart;
+            int bufOffset    = overlapStart - pageStart;          // offset into physical page
+            int fileOffset   = noffH.code.inFileAddr + (overlapStart - codeStart);
+
+            executable->ReadAt(
+                &(kernel->machine->mainMemory[ppn * PageSize + bufOffset]),
+                overlapSize,
+                fileOffset);
+            loaded = true;
+        }
+    }
+
+    // Load from initData segment if this page overlaps it
+    if (noffH.initData.size > 0) {
+        int dataStart = noffH.initData.virtualAddr;
+        int dataEnd   = dataStart + noffH.initData.size;
+        if (pageStart < dataEnd && pageEnd > dataStart) {
+            int overlapStart = (pageStart > dataStart) ? pageStart : dataStart;
+            int overlapEnd   = (pageEnd < dataEnd)     ? pageEnd   : dataEnd;
+            int overlapSize  = overlapEnd - overlapStart;
+            int bufOffset    = overlapStart - pageStart;
+            int fileOffset   = noffH.initData.inFileAddr + (overlapStart - dataStart);
+
+            executable->ReadAt(
+                &(kernel->machine->mainMemory[ppn * PageSize + bufOffset]),
+                overlapSize,
+                fileOffset);
+            loaded = true;
+        }
+    }
+
+    if (loaded) {
+        DEBUG(dbgAddr, "LoadPage: vpn=" << vpn << " ppn=" << ppn << " from file");
+    } else {
+        DEBUG(dbgAddr, "LoadPage: vpn=" << vpn << " ppn=" << ppn << " zeroed (stack/uninit)");
+    }
+
+    // NOW mark the page valid — only after all data is written to the frame.
+    // Any Translate() that sees valid=TRUE is guaranteed to read correct data.
+    kernel->addrLock->P();
+    pageTable[vpn].use   = FALSE;
+    pageTable[vpn].dirty = FALSE;
+    pageTable[vpn].valid = TRUE;
+    kernel->addrLock->V();
 }
 
 //----------------------------------------------------------------------
@@ -303,6 +349,11 @@ ExceptionType AddrSpace::Translate(unsigned int vaddr, unsigned int *paddr,
     *paddr = pfn * PageSize + offset;
 
     ASSERT((*paddr < MemorySize));
+    *paddr = pfn * PageSize + offset;
+
+    ASSERT((*paddr < MemorySize));
+
+    // cerr << " -- AddrSpace::Translate(): vaddr: " << vaddr <<
 
     // cerr << " -- AddrSpace::Translate(): vaddr: " << vaddr <<
     //  ", paddr: " << *paddr << "\n";

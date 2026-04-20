@@ -85,11 +85,13 @@ bool Machine::ReadMem(int addr, int size, int *value) {
     int physicalAddress;
 
     DEBUG(dbgAddr, "Reading VA " << addr << ", size " << size);
-
     exception = Translate(addr, &physicalAddress, size, FALSE);
     if (exception != NoException) {
         RaiseException(exception, addr);
-        return FALSE;
+        if (exception != PageFaultException) return FALSE;
+        // Page is now loaded — retry the translation
+        exception = Translate(addr, &physicalAddress, size, FALSE);
+        if (exception != NoException) return FALSE;
     }
     switch (size) {
         case 1:
@@ -138,7 +140,10 @@ bool Machine::WriteMem(int addr, int size, int value) {
     exception = Translate(addr, &physicalAddress, size, TRUE);
     if (exception != NoException) {
         RaiseException(exception, addr);
-        return FALSE;
+        if (exception != PageFaultException) return FALSE;
+        // Page is now loaded — retry the translation
+        exception = Translate(addr, &physicalAddress, size, TRUE);
+        if (exception != NoException) return FALSE;
     }
     switch (size) {
         case 1:

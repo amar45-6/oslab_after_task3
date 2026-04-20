@@ -236,6 +236,12 @@ bubblesort: bubblesort.o start.o
 	$(LD) $(LDFLAGS) start.o bubblesort.o -o bubblesort.coff
 	$(COFF2NOFF) bubblesort.coff bubblesort
 
+demand_paging_test.o: demand_paging_test.c
+	$(CC) $(CFLAGS) -c demand_paging_test.c
+demand_paging_test: demand_paging_test.o start.o
+	$(LD) $(LDFLAGS) start.o demand_paging_test.o -o demand_paging_test.coff
+	$(COFF2NOFF) demand_paging_test.coff demand_paging_test
+
 help.o: help.c
 	$(CC) $(CFLAGS) -c help.c
 help: help.o start.o
